@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="robots" content="noindex, nofollow">
+  <title>{% block title %}HarenSmartAgent · Private Admin{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  {% if is_authenticated %}
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand-group">
+        <a href="{{ url_for('dashboard') }}" class="brand-link">
+          <span class="brand-mark" aria-hidden="true">HSA</span>
+          <span class="brand-text">
+            <span class="brand-name">HarenSmartAgent</span>
+            <span class="brand-subtitle">Reddit Intelligence · ADK Monitor</span>
+          </span>
+        </a>
+        <span class="access-pill">Haren Only · Read-Only Reddit</span>
+      </div>
+      <div class="topbar-actions">
+        <span class="admin-identity">Signed in as <strong>{{ admin_username }}</strong></span>
+        <form method="post" action="{{ url_for('logout') }}" class="inline-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-secondary btn-sm">Sign Out</button>
+        </form>
+      </div>
+    </div>
+  </header>
+  {% endif %}
+
+  <main id="main-content" class="{% block main_class %}page-shell{% endblock %}">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+      <section class="flash-stack" aria-label="System notifications">
+        {% for category, message in messages %}
+          <div class="flash-banner flash-{{ category }}" role="status" aria-live="polite">
+            <span class="flash-label">{{ category | upper }}</span>
+            <span class="flash-text">{{ message }}</span>
+          </div>
+        {% endfor %}
+      </section>
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </main>
+
+  {% if is_authenticated %}
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <span>HarenSmartAgent · Google ADK + Reddit MCP (Strict Read-Only)</span>
+      <span class="mono-text">gs://haren-agent-storage/harensmartagent</span>
+    </div>
+  </footer>
+  {% endif %}
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

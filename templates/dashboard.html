@@ -1,0 +1,739 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Dashboard · HarenSmartAgent{% endblock %}
+
+{% block content %}
+<!-- System Telemetry Strip -->
+<section class="telemetry-grid" aria-label="System operational status">
+  <article class="telemetry-card">
+    <div class="telemetry-label">Agent Runner</div>
+    <div class="telemetry-value-row">
+      <span id="status-runner-pill" class="badge {{ 'badge-solid' if runner_status.is_running else 'badge-subtle' }}">
+        {{ 'Running Now' if runner_status.is_running else 'Idle' }}
+      </span>
+      <span class="mono-text muted-text">{{ gemini_model }}</span>
+    </div>
+    <div id="status-last-run" class="telemetry-meta">
+      Last run: {{ runner_status.display_last_run_at }}
+      {% if runner_status.last_run_status %}
+        · <strong>{{ runner_status.last_run_status }}</strong>
+      {% endif %}
+    </div>
+  </article>
+
+  <article class="telemetry-card">
+    <div class="telemetry-label">Hourly Scheduler</div>
+    <div class="telemetry-value-row">
+      <span id="status-scheduler-pill" class="badge {{ 'badge-solid' if runner_status.scheduler_active else 'badge-outline' }}">
+        {{ 'Active' if runner_status.scheduler_active else 'Paused' }}
+      </span>
+      <span class="telemetry-inline-detail">Every {{ runner_status.interval_minutes or settings.schedule_interval_minutes or 60 }} min</span>
+    </div>
+    <div id="status-next-run" class="telemetry-meta">
+      Next scheduled: {{ runner_status.display_next_run_at }}
+    </div>
+  </article>
+
+  <article class="telemetry-card">
+    <div class="telemetry-label">Cloud Storage (GCS)</div>
+    <div class="telemetry-value-row">
+      <span class="badge {{ 'badge-solid' if storage_health.connected else 'badge-outline' }}">
+        {{ 'GCS Connected' if storage_health.connected else 'Local Fallback' }}
+      </span>
+    </div>
+    <div class="telemetry-meta mono-text" title="{{ storage_health.error or 'Google Cloud Storage active' }}">
+      gs://{{ storage_health.bucket }}/{{ storage_health.prefix }}
+    </div>
+  </article>
+
+  <article class="telemetry-card">
+    <div class="telemetry-label">Discord Notifications</div>
+    <div class="telemetry-value-row">
+      <span class="badge {{ 'badge-solid' if discord_ready else 'badge-outline' }}">
+        {{ 'Configured' if discord_ready else 'Not Configured' }}
+      </span>
+    </div>
+    <div class="telemetry-meta">
+      {{ discord_summary }}
+    </div>
+  </article>
+</section>
+
+<!-- Live Background Run Progress Banner -->
+<div
+  id="live-run-banner"
+  class="live-run-banner {{ '' if runner_status.is_running else 'is-hidden' }}"
+  role="status"
+  aria-live="polite"
+>
+  <span class="spinner-dot" aria-hidden="true"></span>
+  <span id="live-run-banner-text">
+    HarenSmartAgent is currently scanning subreddits and synthesizing AI/ML summaries{% if runner_status.current_run_started_at %} (started {{ runner_status.display_current_started_at }}){% endif %}. This page will refresh automatically upon completion.
+  </span>
+</div>
+
+<!-- PRIMARY SECTION: Chronological Agent Run Summaries -->
+<section class="panel-card panel-primary" aria-labelledby="chronological-heading">
+  <div class="panel-header">
+    <div>
+      <h1 id="chronological-heading" class="panel-title">Chronological Agent Run Summaries</h1>
+      <p class="panel-description">
+        Complete history of Reddit intelligence runs persisted to
+        <code class="inline-code">gs://{{ storage_health.bucket }}/{{ storage_health.prefix }}/runs/</code>
+        ({{ runs | length }} {{ 'run' if (runs | length) == 1 else 'runs' }}).
+      </p>
+    </div>
+    <nav class="sort-switcher" aria-label="Run chronological sort order">
+      <a
+        href="{{ url_for('dashboard', order='asc') }}"
+        class="sort-option {{ 'is-active' if order == 'asc' else '' }}"
+        {% if order == 'asc' %}aria-current="page"{% endif %}
+      >
+        Oldest → Newest (Chronological)
+      </a>
+      <a
+        href="{{ url_for('dashboard', order='desc') }}"
+        class="sort-option {{ 'is-active' if order == 'desc' else '' }}"
+        {% if order == 'desc' %}aria-current="page"{% endif %}
+      >
+        Newest → Oldest
+      </a>
+    </nav>
+  </div>
+
+  <div tabindex="0" role="region" aria-labelledby="runs-table-caption" class="table-wrapper">
+    <table class="runs-table">
+      <caption id="runs-table-caption" class="sr-only">
+        Chronological HarenSmartAgent Reddit run summaries ({{ 'Oldest to Newest' if order == 'asc' else 'Newest to Oldest' }})
+      </caption>
+      <thead>
+        <tr>
+          <th scope="col">Run Timestamp</th>
+          <th scope="col">Trigger &amp; Status</th>
+          <th scope="col">Articles</th>
+          <th scope="col">Discord Status</th>
+          <th scope="col">Summary of Response</th>
+          <th scope="col">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if runs %}
+          {% for run in runs %}
+          <tr>
+            <th scope="row">
+              <div class="ts-primary">{{ run.display_started_at }}</div>
+              <div class="ts-secondary mono-text">{{ run.run_id }}</div>
+            </th>
+            <td>
+              <div class="cell-badges">
+                <span class="badge {{ 'badge-solid' if run.status == 'success' else 'badge-outline' }}">
+                  {{ run.status }}
+                </span>
+                <span class="badge badge-subtle">{{ run.trigger }}</span>
+              </div>
+            </td>
+            <td>
+              <div class="articles-metric">
+                <strong>{{ run.new_posts_count }}</strong> new / {{ run.total_posts_fetched }} scanned
+              </div>
+              <div class="articles-source">
+                <span class="badge badge-outline">{{ run.source_badge }}</span>
+              </div>
+            </td>
+            <td>
+              <div class="cell-badges">
+                <span class="badge {{ 'badge-solid' if run.discord_sent else 'badge-subtle' }}">
+                  {{ 'Sent' if run.discord_sent else 'Not Sent' }}
+                </span>
+              </div>
+              <div class="cell-subtext">{{ run.discord_status }}</div>
+            </td>
+            <td>
+              <p class="summary-excerpt">{{ run.short_summary }}</p>
+            </td>
+            <td>
+              <button
+                type="button"
+                class="btn btn-secondary btn-sm js-open-run-modal"
+                data-run-id="{{ run.run_id }}"
+              >
+                View Full Report
+              </button>
+            </td>
+          </tr>
+          {% endfor %}
+        {% else %}
+          <tr class="empty-row">
+            <th scope="row">No runs recorded yet</th>
+            <td colspan="5">
+              No agent runs have been saved yet. Use <strong>Run Agent Now</strong> below to execute the first scan across all monitored subreddits.
+            </td>
+          </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ADMIN OPERATIONS GRID -->
+<div class="ops-grid">
+  <!-- Card 1: Execution & Hourly Scheduler -->
+  <section class="panel-card" aria-labelledby="runner-ops-heading">
+    <div class="panel-header-compact">
+      <h2 id="runner-ops-heading" class="panel-subtitle">Manual Execution &amp; Hourly Scheduler</h2>
+      <p class="panel-description">Trigger an immediate Reddit scan or adjust the automated recurring schedule.</p>
+    </div>
+
+    <form method="post" action="{{ url_for('run_now') }}" class="ops-block">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="order" value="{{ order }}">
+
+      <label class="checkbox-row" for="ignore_seen">
+        <input type="checkbox" id="ignore_seen" name="ignore_seen" value="1">
+        <span>
+          <strong>Include already-seen posts</strong>
+          <small class="checkbox-hint">Re-summarize recent hot/new posts even if their post IDs were processed in an earlier run.</small>
+        </span>
+      </label>
+
+      <div class="button-row">
+        <button
+          type="submit"
+          id="btn-run-now"
+          class="btn btn-primary"
+          {% if runner_status.is_running %}disabled{% endif %}
+        >
+          {{ 'Agent Run in Progress…' if runner_status.is_running else 'Run Agent Now' }}
+        </button>
+      </div>
+    </form>
+
+    <hr class="section-divider">
+
+    <div class="ops-block">
+      <div class="scheduler-bar">
+        <div>
+          <div class="field-label">Scheduler State</div>
+          <p class="muted-text small-text">
+            Currently <strong>{{ 'Active' if runner_status.scheduler_active else 'Paused' }}</strong>
+            · Next run: <span id="ops-next-run">{{ runner_status.display_next_run_at }}</span>
+          </p>
+        </div>
+        <form method="post" action="{{ url_for('update_scheduler') }}" class="inline-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="order" value="{{ order }}">
+          {% if runner_status.scheduler_active %}
+            <input type="hidden" name="action" value="pause">
+            <button type="submit" class="btn btn-secondary btn-sm">Pause Scheduler</button>
+          {% else %}
+            <input type="hidden" name="action" value="resume">
+            <button type="submit" class="btn btn-primary btn-sm">Resume Scheduler</button>
+          {% endif %}
+        </form>
+      </div>
+
+      <form method="post" action="{{ url_for('update_scheduler') }}" class="inline-interval-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="order" value="{{ order }}">
+        <input type="hidden" name="action" value="interval">
+        <div class="form-field-inline">
+          <label for="schedule_interval_minutes" class="field-label">Interval (minutes)</label>
+          <div class="input-action-row">
+            <input
+              type="number"
+              id="schedule_interval_minutes"
+              name="schedule_interval_minutes"
+              class="text-input input-narrow"
+              min="5"
+              max="1440"
+              step="1"
+              value="{{ settings.schedule_interval_minutes or runner_status.interval_minutes or 60 }}"
+              required
+            >
+            <button type="submit" class="btn btn-secondary">Update Interval</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <!-- Card 2: Discord Configuration & Live Test -->
+  <section class="panel-card" aria-labelledby="discord-ops-heading">
+    <div class="panel-header-compact">
+      <h2 id="discord-ops-heading" class="panel-subtitle">Discord Notification Configuration</h2>
+      <p class="panel-description">Deliver hourly digests automatically via Webhook or Discord Bot DM/Channel.</p>
+    </div>
+
+    <div class="info-callout">
+      <p><strong>Option A — Webhook URL (Simplest):</strong> In Discord, open <em>Channel Settings → Integrations → Webhooks → New Webhook</em> and paste the Webhook URL below.</p>
+      <p><strong>Option B — Discord Bot (Channel or Direct Message):</strong> Provide a <em>Bot Token</em> plus either a <em>Channel ID</em> (server channel post) or your <em>Discord User ID</em> (private DM to Haren).</p>
+    </div>
+
+    <form method="post" action="{{ url_for('save_discord') }}" class="ops-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="order" value="{{ order }}">
+
+      <div class="form-field">
+        <label for="discord_webhook_url" class="field-label">
+          Option A · Discord Webhook URL
+          {% if masked_secrets.discord_webhook_url %}
+            <span class="saved-indicator">Saved ({{ masked_secrets.discord_webhook_url }})</span>
+          {% endif %}
+        </label>
+        <input
+          type="password"
+          id="discord_webhook_url"
+          name="discord_webhook_url"
+          class="text-input"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="{{ 'Leave blank to keep saved Webhook URL' if masked_secrets.discord_webhook_url else 'https://discord.com/api/webhooks/...' }}"
+        >
+      </div>
+
+      <div class="form-field">
+        <label for="discord_bot_token" class="field-label">
+          Option B · Discord Bot Token
+          {% if masked_secrets.discord_bot_token %}
+            <span class="saved-indicator">Saved ({{ masked_secrets.discord_bot_token }})</span>
+          {% endif %}
+        </label>
+        <input
+          type="password"
+          id="discord_bot_token"
+          name="discord_bot_token"
+          class="text-input"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="{{ 'Leave blank to keep saved Bot Token' if masked_secrets.discord_bot_token else 'Bot token from Discord Developer Portal' }}"
+        >
+      </div>
+
+      <div class="two-col-fields">
+        <div class="form-field">
+          <label for="discord_channel_id" class="field-label">Bot Channel ID (Optional)</label>
+          <input
+            type="text"
+            id="discord_channel_id"
+            name="discord_channel_id"
+            class="text-input mono-text"
+            inputmode="numeric"
+            spellcheck="false"
+            value="{{ settings.discord_channel_id or '' }}"
+            placeholder="e.g. 123456789012345678"
+          >
+        </div>
+
+        <div class="form-field">
+          <label for="discord_user_id" class="field-label">Bot User ID for DM (Optional)</label>
+          <input
+            type="text"
+            id="discord_user_id"
+            name="discord_user_id"
+            class="text-input mono-text"
+            inputmode="numeric"
+            spellcheck="false"
+            value="{{ settings.discord_user_id or '' }}"
+            placeholder="e.g. 987654321098765432"
+          >
+        </div>
+      </div>
+
+      <label class="checkbox-row checkbox-compact" for="clear_discord_secrets">
+        <input type="checkbox" id="clear_discord_secrets" name="clear_discord_secrets" value="1">
+        <span>Clear all saved Discord credentials on save</span>
+      </label>
+
+      <div class="button-row">
+        <button type="submit" class="btn btn-primary">Save Discord Settings</button>
+        <button
+          type="submit"
+          formaction="{{ url_for('test_discord') }}"
+          class="btn btn-secondary"
+        >
+          Send Test Discord Notification
+        </button>
+      </div>
+    </form>
+  </section>
+
+  <!-- Card 3: Subreddits & Reddit MCP Connector -->
+  <section class="panel-card panel-span-full" aria-labelledby="reddit-ops-heading">
+    <div class="panel-header">
+      <div>
+        <h2 id="reddit-ops-heading" class="panel-subtitle">
+          Monitored Subreddits ({{ (settings.subreddits or default_subreddits) | length }}) &amp; Reddit Connector
+        </h2>
+        <p class="panel-description">
+          Powered by <code class="inline-code">eliasbiondo/reddit-mcp-server</code> with automatic read-only JSON resilience. Never posts, comments, or votes.
+        </p>
+      </div>
+      <div class="header-inline-actions">
+        <form method="post" action="{{ url_for('reset_subreddits') }}" class="inline-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="order" value="{{ order }}">
+          <button type="submit" class="btn btn-secondary btn-sm">Restore Default 14</button>
+        </form>
+        <form method="post" action="{{ url_for('clear_seen_posts') }}" class="inline-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="order" value="{{ order }}">
+          <button type="submit" class="btn btn-secondary btn-sm">Clear Seen-Posts Cache</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="subreddit-Grid-section">
+      <ul class="subreddit-chip-list" aria-label="Currently monitored subreddits">
+        {% for sub in (settings.subreddits or default_subreddits) %}
+        <li class="subreddit-chip">
+          <span class="mono-text">r/{{ sub }}</span>
+          <form method="post" action="{{ url_for('remove_subreddit') }}" class="chip-remove-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="order" value="{{ order }}">
+            <input type="hidden" name="subreddit" value="{{ sub }}">
+            <button
+              type="submit"
+              class="chip-remove-btn"
+              aria-label="Remove r/{{ sub }}"
+              title="Remove r/{{ sub }}"
+            >
+              ×
+            </button>
+          </form>
+        </li>
+        {% endfor %}
+      </ul>
+
+      <form method="post" action="{{ url_for('add_subreddits') }}" class="add-subreddit-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="order" value="{{ order }}">
+        <label for="new_subreddits" class="field-label">Add Subreddit(s)</label>
+        <div class="input-action-row">
+          <input
+            type="text"
+            id="new_subreddits"
+            name="new_subreddits"
+            class="text-input"
+            spellcheck="false"
+            autocapitalize="off"
+            placeholder="e.g. OpenAI, LocalLLaMA (comma or space separated)"
+          >
+          <button type="submit" class="btn btn-primary">Add Subreddit</button>
+        </div>
+      </form>
+    </div>
+
+    <hr class="section-divider">
+
+    <form method="post" action="{{ url_for('save_reddit_connector') }}" class="reddit-creds-grid">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="order" value="{{ order }}">
+
+      <div class="form-field">
+        <label for="posts_per_subreddit" class="field-label">Posts Scanned per Subreddit</label>
+        <input
+          type="number"
+          id="posts_per_subreddit"
+          name="posts_per_subreddit"
+          class="text-input"
+          min="1"
+          max="25"
+          value="{{ settings.posts_per_subreddit or 8 }}"
+          required
+        >
+      </div>
+
+      <div class="form-field">
+        <label for="reddit_client_id" class="field-label">
+          REDDIT_CLIENT_ID (Optional MCP OAuth)
+          {% if masked_secrets.reddit_client_id %}
+            <span class="saved-indicator">Saved ({{ masked_secrets.reddit_client_id }})</span>
+          {% endif %}
+        </label>
+        <input
+          type="password"
+          id="reddit_client_id"
+          name="reddit_client_id"
+          class="text-input"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="{{ 'Leave blank to keep saved Client ID' if masked_secrets.reddit_client_id else 'Optional — works without credentials via no-auth MCP' }}"
+        >
+      </div>
+
+      <div class="form-field">
+        <label for="reddit_client_secret" class="field-label">
+          REDDIT_CLIENT_SECRET (Optional MCP OAuth)
+          {% if masked_secrets.reddit_client_secret %}
+            <span class="saved-indicator">Saved ({{ masked_secrets.reddit_client_secret }})</span>
+          {% endif %}
+        </label>
+        <input
+          type="password"
+          id="reddit_client_secret"
+          name="reddit_client_secret"
+          class="text-input"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="{{ 'Leave blank to keep saved Client Secret' if masked_secrets.reddit_client_secret else 'Optional Reddit app secret' }}"
+        >
+      </div>
+
+      <div class="reddit-creds-actions">
+        <label class="checkbox-row checkbox-compact" for="clear_reddit_secrets">
+          <input type="checkbox" id="clear_reddit_secrets" name="clear_reddit_secrets" value="1">
+          <span>Clear optional Reddit OAuth credentials</span>
+        </label>
+        <button type="submit" class="btn btn-secondary">Save Connector Settings</button>
+      </div>
+    </form>
+  </section>
+</div>
+
+<!-- Native Modal Dialog for Full Run Report (No role="dialog" or aria-modal per modern-web-guidance) -->
+<dialog id="run-detail-dialog" class="run-dialog" closedby="any" aria-labelledby="run-dialog-title">
+  <div class="dialog-header">
+    <div>
+      <h1 id="run-dialog-title" class="dialog-title">Agent Run Summary</h1>
+      <p id="dialog-subtitle" class="dialog-subtitle mono-text">—</p>
+    </div>
+    <form method="dialog">
+      <button type="submit" class="btn btn-secondary btn-sm" autofocus>Close</button>
+    </form>
+  </div>
+
+  <div class="dialog-meta-strip">
+    <div class="dialog-meta-row">
+      <span id="dialog-status-badge" class="badge badge-solid">—</span>
+      <span id="dialog-trigger-badge" class="badge badge-subtle">—</span>
+      <span id="dialog-articles-badge" class="badge badge-outline">—</span>
+      <span id="dialog-discord-badge" class="badge badge-subtle">—</span>
+    </div>
+    <div class="dialog-gcs-bar">
+      <span class="gcs-label">GCS Object:</span>
+      <code id="dialog-gcs-uri" class="gcs-uri-code">gs://haren-agent-storage/...</code>
+      <button type="button" id="btn-copy-gcs" class="btn btn-secondary btn-xs">Copy URI</button>
+    </div>
+  </div>
+
+  <article id="dialog-markdown-body" class="dialog-body markdown-body">
+    <p class="muted-text">Loading run report…</p>
+  </article>
+
+  <div class="dialog-footer">
+    <form method="dialog">
+      <button type="submit" class="btn btn-primary">Done</button>
+    </form>
+  </div>
+</dialog>
+
+<!-- Preloaded lightweight metadata map for instant dialog header hydration -->
+<script id="runs-preload-data" type="application/json">
+{
+  {% for run in runs %}
+  {{ run.run_id | tojson }}: {
+    "run_id": {{ run.run_id | tojson }},
+    "display_started_at": {{ run.display_started_at | tojson }},
+    "status": {{ run.status | tojson }},
+    "trigger": {{ run.trigger | tojson }},
+    "new_posts_count": {{ run.new_posts_count | tojson }},
+    "total_posts_fetched": {{ run.total_posts_fetched | tojson }},
+    "source_badge": {{ run.source_badge | tojson }},
+    "discord_sent": {{ run.discord_sent | tojson }},
+    "discord_status": {{ run.discord_status | tojson }},
+    "gcs_uri": {{ run.gcs_uri | tojson }},
+    "short_summary": {{ run.short_summary | tojson }}
+  }{{ "," if not loop.last else "" }}
+  {% endfor %}
+}
+</script>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (() => {
+    const dialog = document.getElementById('run-detail-dialog');
+    const titleEl = document.getElementById('run-dialog-title');
+    const subtitleEl = document.getElementById('dialog-subtitle');
+    const statusBadge = document.getElementById('dialog-status-badge');
+    const triggerBadge = document.getElementById('dialog-trigger-badge');
+    const articlesBadge = document.getElementById('dialog-articles-badge');
+    const discordBadge = document.getElementById('dialog-discord-badge');
+    const gcsUriEl = document.getElementById('dialog-gcs-uri');
+    const copyGcsBtn = document.getElementById('btn-copy-gcs');
+    const markdownBody = document.getElementById('dialog-markdown-body');
+
+    let preloadMap = {};
+    const preloadScript = document.getElementById('runs-preload-data');
+    if (preloadScript) {
+      try {
+        preloadMap = JSON.parse(preloadScript.textContent || '{}');
+      } catch (_) {
+        preloadMap = {};
+      }
+    }
+
+    // Fallback for browsers without declarative <dialog closedby="any"> support
+    if (dialog && !('closedBy' in HTMLDialogElement.prototype)) {
+      const isOutsideDialog = (evt, dlg) => {
+        const rect = dlg.getBoundingClientRect();
+        return (
+          evt.clientX < rect.left ||
+          evt.clientX > rect.right ||
+          evt.clientY < rect.top ||
+          evt.clientY > rect.bottom
+        );
+      };
+      let pressedOutside = false;
+      dialog.addEventListener('pointerdown', (evt) => {
+        pressedOutside = isOutsideDialog(evt, dialog);
+      });
+      dialog.addEventListener('pointerup', (evt) => {
+        if (pressedOutside && isOutsideDialog(evt, dialog)) {
+          dialog.close();
+        }
+      });
+    }
+
+    function applyRunMeta(meta) {
+      if (!meta) return;
+      titleEl.textContent = `Run Report · ${meta.display_started_at || meta.run_id}`;
+      subtitleEl.textContent = `Run ID: ${meta.run_id}`;
+      statusBadge.textContent = `Status: ${meta.status || 'unknown'}`;
+      statusBadge.className = meta.status === 'success' ? 'badge badge-solid' : 'badge badge-outline';
+      triggerBadge.textContent = `Trigger: ${meta.trigger || 'scheduled'}`;
+      articlesBadge.textContent = `${meta.new_posts_count ?? 0} new / ${meta.total_posts_fetched ?? 0} scanned · ${meta.source_badge || 'MCP'}`;
+      discordBadge.textContent = `Discord: ${meta.discord_status || (meta.discord_sent ? 'Sent' : 'Not sent')}`;
+      gcsUriEl.textContent = meta.gcs_uri || '';
+    }
+
+    document.querySelectorAll('.js-open-run-modal').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const runId = btn.getAttribute('data-run-id');
+        if (!runId || !dialog) return;
+
+        const preload = preloadMap[runId];
+        if (preload) {
+          applyRunMeta(preload);
+        } else {
+          titleEl.textContent = 'Agent Run Report';
+          subtitleEl.textContent = `Run ID: ${runId}`;
+        }
+        markdownBody.innerHTML = '<p class="muted-text">Loading full Markdown report from storage…</p>';
+        if (!dialog.open) {
+          dialog.showModal();
+        }
+
+        try {
+          const resp = await fetch(`/api/runs/${encodeURIComponent(runId)}`, {
+            headers: { 'Accept': 'application/json' },
+            credentials: 'same-origin'
+          });
+          if (!resp.ok) {
+            throw new Error(`HTTP ${resp.status}`);
+          }
+          const data = await resp.json();
+          applyRunMeta(data);
+          markdownBody.innerHTML = data.rendered_html || '<p class="muted-text">No content available.</p>';
+        } catch (err) {
+          const fallbackText = preload && preload.short_summary
+            ? preload.short_summary
+            : 'Unable to fetch full run details right now.';
+          markdownBody.textContent = fallbackText;
+        }
+      });
+    });
+
+    if (copyGcsBtn && gcsUriEl) {
+      copyGcsBtn.addEventListener('click', async () => {
+        const text = gcsUriEl.textContent || '';
+        if (!text || !navigator.clipboard) return;
+        try {
+          await navigator.clipboard.writeText(text);
+          const original = copyGcsBtn.textContent;
+          copyGcsBtn.textContent = 'Copied';
+          setTimeout(() => { copyGcsBtn.textContent = original; }, 1600);
+        } catch (_) {
+          // Ignore clipboard permission errors silently
+        }
+      });
+    }
+
+    // Live status poller (/api/status) — auto-refreshes when a background run completes
+    const runnerPill = document.getElementById('status-runner-pill');
+    const lastRunEl = document.getElementById('status-last-run');
+    const schedulerPill = document.getElementById('status-scheduler-pill');
+    const nextRunEl = document.getElementById('status-next-run');
+    const opsNextRunEl = document.getElementById('ops-next-run');
+    const runBanner = document.getElementById('live-run-banner');
+    const runBannerText = document.getElementById('live-run-banner-text');
+    const runNowBtn = document.getElementById('btn-run-now');
+
+    let wasRunning = {{ 'true' if runner_status.is_running else 'false' }};
+    const initialLastRunAt = {{ (runner_status.last_run_at or '') | tojson }};
+    let reloadScheduled = false;
+
+    async function pollStatus() {
+      if (reloadScheduled) return;
+      try {
+        const resp = await fetch('/api/status', {
+          headers: { 'Accept': 'application/json' },
+          credentials: 'same-origin'
+        });
+        if (!resp.ok) return;
+        const status = await resp.json();
+        const isRunning = Boolean(status.is_running);
+
+        if (runnerPill) {
+          runnerPill.textContent = isRunning ? 'Running Now' : 'Idle';
+          runnerPill.className = isRunning ? 'badge badge-solid' : 'badge badge-subtle';
+        }
+        if (schedulerPill) {
+          schedulerPill.textContent = status.scheduler_active ? 'Active' : 'Paused';
+          schedulerPill.className = status.scheduler_active ? 'badge badge-solid' : 'badge badge-outline';
+        }
+        if (nextRunEl && status.display_next_run_at) {
+          nextRunEl.textContent = `Next scheduled: ${status.display_next_run_at}`;
+        }
+        if (opsNextRunEl && status.display_next_run_at) {
+          opsNextRunEl.textContent = status.display_next_run_at;
+        }
+        if (lastRunEl && status.display_last_run_at) {
+          const suffix = status.last_run_status ? ` · ${status.last_run_status}` : '';
+          lastRunEl.textContent = `Last run: ${status.display_last_run_at}${suffix}`;
+        }
+        if (runNowBtn) {
+          runNowBtn.disabled = isRunning;
+          runNowBtn.textContent = isRunning ? 'Agent Run in Progress…' : 'Run Agent Now';
+        }
+        if (runBanner) {
+          runBanner.classList.toggle('is-hidden', !isRunning);
+          if (isRunning && runBannerText && status.display_current_started_at && status.display_current_started_at !== '—') {
+            runBannerText.textContent = `HarenSmartAgent is currently scanning subreddits and synthesizing AI/ML summaries (started ${status.display_current_started_at}). This page will refresh automatically upon completion.`;
+          }
+        }
+
+        const completedAfterRunning = wasRunning && !isRunning;
+        const completedNewRun = !isRunning && Boolean(status.last_run_at) && status.last_run_at !== initialLastRunAt;
+
+        if ((completedAfterRunning || completedNewRun) && (!dialog || !dialog.open)) {
+          reloadScheduled = true;
+          if (runBanner && runBannerText) {
+            runBanner.classList.remove('is-hidden');
+            runBannerText.textContent = 'Run completed — refreshing chronological summaries…';
+          }
+          setTimeout(() => window.location.reload(), 650);
+          return;
+        }
+
+        wasRunning = isRunning;
+      } catch (_) {
+        // Transient network hiccup; next interval will retry
+      }
+      setTimeout(pollStatus, wasRunning ? 3000 : 10000);
+    }
+
+    setTimeout(pollStatus, wasRunning ? 2500 : 8000);
+  })();
+</script>
+{% endblock %}
