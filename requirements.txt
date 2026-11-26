@@ -2,6 +2,7 @@ google-adk>=2.13.0
 google-genai>=2.32.0
 google-cloud-storage>=3.17.0
 Flask>=3.1.0
+gunicorn>=23.0.0
 APScheduler>=3.11.0
 mcp>=2.0.0
 reddit-no-auth-mcp-server>=0.2.1

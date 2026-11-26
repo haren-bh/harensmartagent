@@ -22,18 +22,24 @@ from flask import (
     url_for,
 )
 
+from werkzeug.middleware.proxy_fix import ProxyFix
+
 from config import Config, DEFAULT_SUBREDDITS
 from services.discord_notifier import discord_notifier
 from services.runner_service import runner_service
 from services.storage_service import storage_service
 
 app = Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)  # type: ignore[assignment]
 app.secret_key = Config.FLASK_SECRET_KEY
 app.debug = os.environ.get("FLASK_DEBUG", "false").lower() in ("1", "true", "yes")
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=os.environ.get("SESSION_COOKIE_SECURE", "false").lower()
+    SESSION_COOKIE_SECURE=os.environ.get(
+        "SESSION_COOKIE_SECURE",
+        "true" if os.environ.get("K_SERVICE") else "false",
+    ).lower()
     in ("1", "true", "yes"),
     SESSION_COOKIE_NAME="haren_smartagent_admin",
 )
@@ -283,7 +289,7 @@ def _enrich_run(run: dict[str, Any], bucket_name: str) -> dict[str, Any]:
     enriched["total_posts_fetched"] = int(enriched.get("total_posts_fetched") or 0)
     enriched["source_badge"] = _derive_source_badge(enriched)
 
-    discord_sent = bool(enriched.get("discord_sent"))
+    discord_sent = bool(enriched.get("discord_sent") or enriched.get("discord_notified"))
     discord_status = str(enriched.get("discord_status") or "").strip()
     if not discord_status:
         discord_status = "Sent" if discord_sent else "Not sent"
@@ -324,10 +330,12 @@ def _current_order() -> str:
 
 @app.before_request
 def enforce_auth_and_csrf() -> Any:
-    """Require Haren authentication on all routes (except /login & /static/*) and validate CSRF."""
+    """Require Haren authentication on all routes (except /login, /healthz, /api/cron/hourly & /static/*) and validate CSRF."""
     endpoint = request.endpoint or ""
+    if endpoint in ("static", "healthz", "cron_hourly"):
+        return None
 
-    if endpoint != "static" and not _is_authenticated():
+    if not _is_authenticated():
         if endpoint != "login":
             if request.path.startswith("/api/"):
                 return jsonify({"error": "Authentication required."}), 401
@@ -740,11 +748,48 @@ def api_run_detail(run_id: str) -> Any:
     return jsonify(enriched)
 
 
+@app.get("/healthz")
+def healthz() -> Any:
+    """Lightweight container readiness probe for Cloud Run."""
+    return jsonify({"status": "ok"}), 200
+
+
+@app.post("/api/cron/hourly")
+def cron_hourly() -> Any:
+    """Secure Cloud Scheduler webhook to execute hourly monitoring synchronously on Cloud Run."""
+    expected_secret = (Config.CRON_SECRET or "").strip()
+    provided_secret = (request.headers.get("X-Cron-Secret") or "").strip()
+    if not expected_secret or not provided_secret or not hmac.compare_digest(
+        provided_secret.encode("utf-8"),
+        expected_secret.encode("utf-8"),
+    ):
+        return jsonify({"error": "Forbidden"}), 403
+
+    settings = storage_service.get_settings()
+    if not settings.get("scheduler_enabled", True):
+        return jsonify({"status": "skipped", "reason": "scheduler_paused_in_admin_ui"}), 200
+
+    result = runner_service.execute_run(trigger="scheduled", ignore_seen=False)
+    return jsonify(
+        {
+            "run_id": result.get("run_id"),
+            "status": result.get("status"),
+            "new_posts_count": result.get("new_posts_count"),
+            "total_posts_fetched": result.get("total_posts_fetched"),
+            "discord_sent": result.get("discord_sent"),
+            "gcs_blob_path": result.get("gcs_blob_path"),
+        }
+    ), 200
+
+
 # ---------------------------------------------------------------------------
 # Scheduler Startup Guard (Avoid Duplicate Schedulers Under Debug Reloader)
 # ---------------------------------------------------------------------------
 
-if os.environ.get("SKIP_SCHEDULER_INIT") != "1":
+if (
+    os.environ.get("SKIP_SCHEDULER_INIT") != "1"
+    and os.environ.get("CLOUD_SCHEDULER_MANAGED", "").lower() not in ("1", "true", "yes")
+):
     if not app.debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         runner_service.init_scheduler()
 

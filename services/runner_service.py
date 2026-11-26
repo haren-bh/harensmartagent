@@ -662,6 +662,7 @@ class AgentRunnerService:
                 "source_breakdown": source_breakdown,
                 "fetch_errors": fetch_errors,
                 "synthesis_error": synthesis_error,
+                "discord_sent": discord_notified,
                 "discord_notified": discord_notified,
                 "discord_status": discord_status,
                 "articles": [_compact_article_record(p) for p in candidate_posts[:MAX_POSTS_IN_PROMPT]],
@@ -697,6 +698,7 @@ class AgentRunnerService:
                 "full_response": f"### ❌ Agent Run Error\n\n`{exc}`",
                 "source_breakdown": {},
                 "fetch_errors": [str(exc)],
+                "discord_sent": False,
                 "discord_notified": False,
                 "discord_status": "Skipped due to run error",
                 "articles": [],
@@ -718,14 +720,48 @@ class AgentRunnerService:
             self._run_lock.release()
 
     def get_status(self) -> dict[str, Any]:
-        """Return live runner and APScheduler status dictionary."""
+        """Return live runner and APScheduler / Cloud Scheduler status dictionary."""
+        import os as _os
+        from datetime import timedelta as _timedelta
+
         self._hydrate_last_run_from_storage()
+        cloud_managed = _os.environ.get("CLOUD_SCHEDULER_MANAGED", "").lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+
+        if cloud_managed:
+            try:
+                settings = storage_service.get_settings()
+            except Exception:
+                settings = {}
+            enabled = bool(settings.get("scheduler_enabled", True))
+            interval = int(
+                settings.get("schedule_interval_minutes") or self._interval_minutes
+            )
+            next_run_at: str | None = None
+            if enabled:
+                now_utc = datetime.now(timezone.utc)
+                next_hour = now_utc.replace(minute=0, second=0, microsecond=0) + _timedelta(hours=1)
+                next_run_at = next_hour.isoformat()
+
+            with self._state_lock:
+                return {
+                    "is_running": self._is_running,
+                    "current_run_started_at": self._current_run_started_at,
+                    "scheduler_active": enabled,
+                    "interval_minutes": interval,
+                    "next_run_at": next_run_at,
+                    "last_run_at": self._last_run_at,
+                    "last_run_status": self._last_run_status,
+                }
 
         with self._state_lock:
             scheduler_active = bool(
                 self._scheduler is not None and self._scheduler.state == STATE_RUNNING
             )
-            next_run_at: str | None = None
+            next_run_at = None
             if scheduler_active and self._scheduler is not None:
                 job = self._scheduler.get_job(self.JOB_ID)
                 if job is not None and job.next_run_time is not None:

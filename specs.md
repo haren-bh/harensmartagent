@@ -27,3 +27,16 @@ Created a complete Google ADK (Agent Development Kit) monitoring system and priv
 7. **`app.py`, `templates/base.html`, `templates/login.html`, `templates/dashboard.html`, `static/styles.css`, `README.md`**:
    - Built the Haren-only Flask Admin Web Application in a crisp **gray and white** architectural theme (`#f4f5f7`, `#ffffff`, `#e5e7eb`, `#111827`, `#1f2937`).
    - Enforced session authentication (`hmac.compare_digest`), `HttpOnly`/`SameSite=Lax` cookies, CSRF protection on all `POST` endpoints, secret masking, manual "Run Now" trigger with live `/api/status` polling, hourly scheduler pause/resume/interval controls, Discord configuration + test sender, subreddit manager, and a `@container` responsive chronological run summaries table with native `<dialog>` full-digest viewer.
+
+## 2026-11-26 — Cloud Run Production Readiness & Deployment (`haren-main` / `us-central1`)
+
+### Exact Changes Made
+1. **`Dockerfile`, `.dockerignore`, `requirements.txt`**:
+   - Added `gunicorn>=23.0.0` to `requirements.txt` and created a `python:3.12-slim` `Dockerfile` running `gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 300 app:app` so `reddit-no-auth-mcp-server`, `google-adk`, and Flask run cleanly in a single multi-threaded worker container.
+   - Created `.dockerignore` excluding local `.env`, `.git/`, `__pycache__/`, and `instance/` from container build context.
+2. **`config.py`**:
+   - Added automatic Cloud Run detection (`K_SERVICE`) to bind `0.0.0.0:$PORT`, store ephemeral local fallback cache under `/tmp/harensmartagent_cache`, and read `CRON_SECRET` for Cloud Scheduler authentication.
+3. **`app.py` & `services/runner_service.py`**:
+   - Added Werkzeug `ProxyFix` for Cloud Run HTTPS reverse-proxy headers and enabled `SESSION_COOKIE_SECURE` automatically on Cloud Run.
+   - Added `/healthz` readiness endpoint and `X-Cron-Secret`-protected `POST /api/cron/hourly` webhook so Google Cloud Scheduler executes hourly monitoring passes synchronously inside HTTP request lifetime (avoiding scale-to-zero missed runs) while honoring the Admin UI's Pause/Resume setting in `gs://haren-agent-storage`.
+   - Standardized `discord_sent` / `discord_notified` fields and added `CLOUD_SCHEDULER_MANAGED` status reporting in `runner_service.get_status()`.

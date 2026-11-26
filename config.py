@@ -66,7 +66,11 @@ class Config:
     # Google Cloud Storage
     GCS_BUCKET_NAME: str = os.environ.get("GCS_BUCKET_NAME", "haren-agent-storage")
     GCS_PREFIX: str = os.environ.get("GCS_PREFIX", "harensmartagent")
-    LOCAL_FALLBACK_DIR: Path = BASE_DIR / "instance" / "storage_cache"
+    LOCAL_FALLBACK_DIR: Path = (
+        Path("/tmp/harensmartagent_cache")
+        if os.environ.get("K_SERVICE")
+        else BASE_DIR / "instance" / "storage_cache"
+    )
 
     # Reddit settings (STRICTLY READ-ONLY — never post, comment, or vote)
     REDDIT_USERNAME: str = os.environ.get("REDDIT_USERNAME", "")
@@ -92,10 +96,11 @@ class Config:
         "true",
         "yes",
     )
+    CRON_SECRET: str = os.environ.get("CRON_SECRET", "")
 
     # Flask Admin Web UI settings (viewable by Haren only)
     ADMIN_USERNAME: str = os.environ.get("ADMIN_USERNAME", "haren_admin")
     ADMIN_PASSWORD: str = os.environ.get("ADMIN_PASSWORD", "Haren@SmartAgent2026!")
     FLASK_SECRET_KEY: str = os.environ.get("FLASK_SECRET_KEY") or secrets.token_hex(32)
-    FLASK_HOST: str = os.environ.get("FLASK_HOST", "127.0.0.1")
-    FLASK_PORT: int = int(os.environ.get("FLASK_PORT", "5050"))
+    FLASK_HOST: str = os.environ.get("FLASK_HOST", "0.0.0.0" if os.environ.get("K_SERVICE") else "127.0.0.1")
+    FLASK_PORT: int = int(os.environ.get("PORT", os.environ.get("FLASK_PORT", "5050")))
